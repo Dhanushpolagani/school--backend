@@ -1307,4 +1307,13 @@ router.get("/reports/stock", async (req, res) => {
 });
 
 
+// Integrated Purchase Orders sub-router
+try {
+  const purchaseOrdersRouter = require("../services/purchaseOrdersRouter");
+  router.use("/purchase-orders", purchaseOrdersRouter);
+  router.purchaseOrdersRouter = purchaseOrdersRouter;
+} catch (e) {
+  console.warn("Could not load purchaseOrdersRouter:", e.message);
+}
+
 module.exports = router;

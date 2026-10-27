@@ -31,9 +31,9 @@ function requireTenant(req, res) {
    ANNOUNCEMENTS (Circulars, School Notices, Events)
    ========================================================================== */
 
-// GET /api/announcements
+// GET /api/announcements or /api/notices
 // List announcements relevant to the logged-in user
-router.get("/announcements", async (req, res, next) => {
+router.get(["/announcements", "/notices"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -101,9 +101,9 @@ router.get("/announcements", async (req, res, next) => {
   }
 });
 
-// GET /api/announcements/:id
+// GET /api/announcements/:id or /api/notices/:id
 // Get a single announcement
-router.get("/announcements/:id", async (req, res, next) => {
+router.get(["/announcements/:id", "/notices/:id"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -137,9 +137,9 @@ router.get("/announcements/:id", async (req, res, next) => {
   }
 });
 
-// POST /api/announcements
+// POST /api/announcements or /api/notices
 // Create an announcement (admin/staff)
-router.post("/announcements", async (req, res, next) => {
+router.post(["/announcements", "/notices"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -217,8 +217,9 @@ router.post("/announcements", async (req, res, next) => {
 });
 
 // PUT /api/announcements/:id
+// PUT /api/announcements/:id or /api/notices/:id
 // Update an announcement
-router.put("/announcements/:id", async (req, res, next) => {
+router.put(["/announcements/:id", "/notices/:id"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -287,9 +288,9 @@ router.put("/announcements/:id", async (req, res, next) => {
   }
 });
 
-// DELETE /api/announcements/:id
+// DELETE /api/announcements/:id or /api/notices/:id
 // Delete an announcement
-router.delete("/announcements/:id", async (req, res, next) => {
+router.delete(["/announcements/:id", "/notices/:id"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -328,9 +329,9 @@ router.delete("/announcements/:id", async (req, res, next) => {
    IN-APP NOTIFICATIONS (User-specific alerts & activity notifications)
    ========================================================================== */
 
-// GET /api/notifications
+// GET /api/notifications or /api/messages
 // List notifications for current user with unread counter
-router.get("/notifications", async (req, res, next) => {
+router.get(["/notifications", "/messages"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -361,9 +362,9 @@ router.get("/notifications", async (req, res, next) => {
   }
 });
 
-// PATCH /api/notifications/:id/read
-// Mark single notification as read
-router.patch("/notifications/:id/read", async (req, res, next) => {
+// PATCH /api/notifications/:id/read or PUT
+router.all(["/notifications/:id/read", "/notifications/:id", "/messages/:id/read"], async (req, res, next) => {
+  if (req.method !== "PATCH" && req.method !== "PUT") return next();
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -394,9 +395,9 @@ router.patch("/notifications/:id/read", async (req, res, next) => {
   }
 });
 
-// POST /api/notifications/mark-all-read
-// Mark all notifications for the current user as read
-router.post("/notifications/mark-all-read", async (req, res, next) => {
+// POST or PUT /api/notifications/read-all or /api/notifications/mark-all-read
+router.all(["/notifications/mark-all-read", "/notifications/read-all"], async (req, res, next) => {
+  if (req.method !== "POST" && req.method !== "PUT") return next();
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 

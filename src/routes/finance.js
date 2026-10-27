@@ -1292,4 +1292,43 @@ router.get("/payments/:id/print", async (req, res) => {
   }
 });
 
+
+// GET /api/finance/summary
+// High-level financial summary
+router.get("/summary", async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenantId;
+    const result = await pool.query(
+      `SELECT
+         COALESCE(SUM(amount_paise), 0) AS total_collected_paise,
+         COUNT(*) AS total_transactions
+       FROM fee_payments
+       WHERE tenant_id = $1`,
+      [tenantId]
+    );
+
+    const assignments = await pool.query(
+      `SELECT
+         COALESCE(SUM(net_amount_paise), 0) AS total_assigned_paise,
+         COALESCE(SUM(paid_amount_paise), 0) AS total_paid_paise,
+         COALESCE(SUM(net_amount_paise - paid_amount_paise), 0) AS total_due_paise
+       FROM student_fee_assignments
+       WHERE tenant_id = $1`,
+      [tenantId]
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        totalCollectedPaise: Number(result.rows[0].total_collected_paise),
+        totalAssignedPaise: Number(assignments.rows[0].total_assigned_paise),
+        totalDuePaise: Number(assignments.rows[0].total_due_paise),
+        totalTransactions: Number(result.rows[0].total_transactions),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

@@ -1,15 +1,23 @@
-
 const express = require("express");
 const pool = require("../config/db");
 const { authenticateToken } = require("../middleware/auth");
+const { logAudit } = require("../utils/auditLogger");
 
 const router = express.Router();
 
 router.use(authenticateToken);
 
-// POST /api/classes
+function isValidId(value) {
+  return /^[1-9]\d*$/.test(String(value));
+}
+
+// -------------------------------------------------------------
+// CLASSES
+// -------------------------------------------------------------
+
+// POST /api/academics/classes or /api/classes
 // Create a class for the authenticated school.
-router.post("/", async (req, res, next) => {
+router.post(["/", "/classes"], async (req, res, next) => {
   const { name, description } = req.body || {};
 
   if (typeof name !== "string" || !name.trim()) {
@@ -69,9 +77,9 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-// GET /api/classes
+// GET /api/academics/classes or /api/classes
 // List classes belonging to the authenticated school.
-router.get("/", async (req, res, next) => {
+router.get(["/", "/classes"], async (req, res, next) => {
   try {
     const result = await pool.query(
       `SELECT
@@ -101,17 +109,16 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-function isValidClassId(value) {
-  return /^[1-9]\d*$/.test(String(value));
-}
+// -------------------------------------------------------------
+// SECTIONS
+// -------------------------------------------------------------
 
-// POST /api/classes/:classId/sections
-// Create a section for a class belonging to the logged-in school.
-router.post("/:classId/sections", async (req, res, next) => {
+// POST /api/academics/classes/:classId/sections or /api/classes/:classId/sections
+router.post(["/:classId/sections", "/classes/:classId/sections"], async (req, res, next) => {
   const { classId } = req.params;
   const { name } = req.body || {};
 
-  if (!isValidClassId(classId)) {
+  if (!isValidId(classId)) {
     return res.status(400).json({
       success: false,
       message: "Invalid class ID.",
@@ -167,12 +174,11 @@ router.post("/:classId/sections", async (req, res, next) => {
   }
 });
 
-// GET /api/classes/:classId/sections
-// List sections for a class in the logged-in school.
-router.get("/:classId/sections", async (req, res, next) => {
+// GET /api/academics/classes/:classId/sections or /api/classes/:classId/sections
+router.get(["/:classId/sections", "/classes/:classId/sections"], async (req, res, next) => {
   const { classId } = req.params;
 
-  if (!isValidClassId(classId)) {
+  if (!isValidId(classId)) {
     return res.status(400).json({
       success: false,
       message: "Invalid class ID.",
@@ -207,6 +213,107 @@ router.get("/:classId/sections", async (req, res, next) => {
       class: classResult.rows[0],
       count: result.rowCount,
       sections: result.rows,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// -------------------------------------------------------------
+// SUBJECTS
+// -------------------------------------------------------------
+
+// GET /api/academics/subjects
+router.get("/subjects", async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, subject_code, name, description, is_active, created_at
+       FROM school_subjects
+       WHERE tenant_id = $1
+       ORDER BY name`,
+      [req.user.tenantId]
+    );
+
+    return res.json({
+      success: true,
+      count: result.rowCount,
+      data: result.rows,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/academics/subjects
+router.post("/subjects", async (req, res, next) => {
+  const { subjectCode, name, description } = req.body || {};
+
+  if (!subjectCode || typeof subjectCode !== "string" || !subjectCode.trim()) {
+    return res.status(400).json({ success: false, message: "Subject code is required." });
+  }
+
+  if (!name || typeof name !== "string" || !name.trim()) {
+    return res.status(400).json({ success: false, message: "Subject name is required." });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO school_subjects (tenant_id, subject_code, name, description)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, subject_code, name, description, is_active, created_at`,
+      [req.user.tenantId, subjectCode.trim().toUpperCase(), name.trim(), description?.trim() || null]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Subject created successfully.",
+      data: result.rows[0],
+    });
+  } catch (error) {
+    if (error.code === "23505") {
+      return res.status(409).json({
+        success: false,
+        message: "A subject with this code or name already exists.",
+      });
+    }
+    next(error);
+  }
+});
+
+// PUT /api/academics/subjects/:id
+router.put("/subjects/:id", async (req, res, next) => {
+  const { id } = req.params;
+  const { name, description, isActive } = req.body || {};
+
+  if (!isValidId(id)) {
+    return res.status(400).json({ success: false, message: "Invalid subject ID." });
+  }
+
+  try {
+    const existing = await pool.query(
+      "SELECT * FROM school_subjects WHERE id = $1 AND tenant_id = $2",
+      [id, req.user.tenantId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ success: false, message: "Subject not found." });
+    }
+
+    const updatedName = typeof name === "string" && name.trim() ? name.trim() : existing.rows[0].name;
+    const updatedDesc = description !== undefined ? description : existing.rows[0].description;
+    const updatedActive = typeof isActive === "boolean" ? isActive : existing.rows[0].is_active;
+
+    const result = await pool.query(
+      `UPDATE school_subjects
+       SET name = $1, description = $2, is_active = $3, updated_at = NOW()
+       WHERE id = $4 AND tenant_id = $5
+       RETURNING id, subject_code, name, description, is_active, updated_at`,
+      [updatedName, updatedDesc, updatedActive, id, req.user.tenantId]
+    );
+
+    return res.json({
+      success: true,
+      message: "Subject updated successfully.",
+      data: result.rows[0],
     });
   } catch (error) {
     next(error);

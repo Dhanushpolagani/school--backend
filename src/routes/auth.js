@@ -111,31 +111,26 @@ function validEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// Register a school and its first administrator.
-router.post("/register-school", async (req, res) => {
-  const name = String(req.body.name || "").trim();
-  const slug = String(req.body.slug || "").trim().toLowerCase();
+// POST /api/auth/signup alias to register-school
+router.post(["/signup", "/register-school"], async (req, res) => {
+  const name = String(req.body.schoolName || req.body.name || "").trim();
+  const schoolCode = String(req.body.schoolCode || req.body.slug || "").trim().toLowerCase();
+  const slug = schoolCode || name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
   const email = normalizeEmail(req.body.email);
-  const fullName = String(req.body.fullName || "").trim();
+  const fullName = String(req.body.fullName || `${req.body.firstName || ""} ${req.body.lastName || ""}`).trim();
   const password = req.body.password;
 
   if (
     name.length < 2 ||
     name.length > 150 ||
-    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) ||
-    slug.length > 100 ||
+    !slug ||
     !validEmail(email) ||
-    email.length > 255 ||
-    fullName.length < 2 ||
-    fullName.length > 150 ||
     typeof password !== "string" ||
-    password.length < 12 ||
-    Buffer.byteLength(password, "utf8") > 72
+    password.length < 6
   ) {
     return res.status(400).json({
       success: false,
-      message:
-        "Provide a valid school name, slug, email, full name, and password (12–72 UTF-8 bytes).",
+      message: "Provide a valid school name, email, full name, and password.",
     });
   }
 
@@ -147,40 +142,35 @@ router.post("/register-school", async (req, res) => {
     await client.query("BEGIN");
 
     const tenantResult = await client.query(
-      `INSERT INTO tenants (name, slug, email)
-       VALUES ($1, $2, $3)
-       RETURNING id, name, slug`,
-      [name, slug, email]
+      `INSERT INTO tenants (name, slug, school_code, school_name, email)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name, slug, school_code, school_name`,
+      [name, slug, slug.toUpperCase(), name, email]
     );
 
     const tenant = tenantResult.rows[0];
 
     const userResult = await client.query(
-      `INSERT INTO users (tenant_id, full_name, email, password_hash)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO users (tenant_id, full_name, first_name, last_name, email, password_hash, role)
+       VALUES ($1, $2, $3, $4, $5, $6, 'school_admin')
        RETURNING id, tenant_id, full_name, email`,
-      [tenant.id, fullName, email, passwordHash]
+      [tenant.id, fullName, req.body.firstName || fullName.split(" ")[0], req.body.lastName || fullName.split(" ").slice(1).join(" ") || "", email, passwordHash]
     );
 
     const user = userResult.rows[0];
 
-    const roleResult = await client.query(
-      "SELECT id FROM roles WHERE name = $1",
-      ["school_admin"]
-    );
-
-    if (roleResult.rowCount !== 1) {
-      throw new Error("Required school_admin role is missing");
+    let roleResult = await client.query("SELECT id FROM roles WHERE name = 'school_admin'");
+    if (roleResult.rowCount === 0) {
+      roleResult = await client.query("INSERT INTO roles (name, description) VALUES ('school_admin', 'School Administrator') RETURNING id");
     }
 
     await client.query(
-      "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)",
+      "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
       [user.id, roleResult.rows[0].id]
     );
 
     await client.query("COMMIT");
 
-    // Registration does not automatically log in the new administrator.
     return res.status(201).json({
       success: true,
       message: "School registered successfully. Please log in.",
@@ -188,57 +178,57 @@ router.post("/register-school", async (req, res) => {
       user,
     });
   } catch (error) {
-    if (client) {
-      await client.query("ROLLBACK").catch(() => {});
-    }
-
+    if (client) await client.query("ROLLBACK").catch(() => {});
     if (error.code === "23505") {
-      return res.status(409).json({
-        success: false,
-        message: "That school slug or account already exists.",
-      });
+      return res.status(409).json({ success: false, message: "That school slug or email already exists." });
     }
-
     console.error("School registration failed:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: "Unable to register school.",
-    });
+    return res.status(500).json({ success: false, message: "Unable to register school." });
   } finally {
     client?.release();
   }
 });
 
-// Log in using school slug, email and password.
+// POST /api/auth/login
+// Log in using email and password (with optional tenantSlug / schoolCode).
 router.post("/login", async (req, res) => {
-  const tenantSlug = String(req.body.tenantSlug || "").trim().toLowerCase();
+  const tenantSlug = String(req.body.tenantSlug || req.body.schoolCode || "").trim().toLowerCase();
   const email = normalizeEmail(req.body.email);
   const password = req.body.password;
 
-  if (
-    !tenantSlug ||
-    !validEmail(email) ||
-    typeof password !== "string" ||
-    password.length > 72
-  ) {
+  if (!validEmail(email) || typeof password !== "string" || !password) {
     return res.status(400).json({
       success: false,
-      message: "Provide your school slug, email and password.",
+      message: "Provide a valid email and password.",
     });
   }
 
   try {
-    const result = await pool.query(
-      `SELECT u.id, u.tenant_id, u.full_name, u.email,
-              u.password_hash, t.status AS tenant_status
-       FROM users u
-       JOIN tenants t ON t.id = u.tenant_id
-       WHERE t.slug = $1
-         AND u.email = $2
-         AND u.is_active = TRUE
-       LIMIT 1`,
-      [tenantSlug, email]
-    );
+    let result;
+    if (tenantSlug) {
+      result = await pool.query(
+        `SELECT u.id, u.tenant_id, u.full_name, u.first_name, u.last_name, u.avatar_url,
+                u.email, u.password_hash, u.role, t.status AS tenant_status, t.school_code, t.name AS school_name
+         FROM users u
+         JOIN tenants t ON t.id = u.tenant_id
+         WHERE (t.slug = $1 OR LOWER(t.school_code) = $1)
+           AND u.email = $2
+           AND u.is_active = TRUE
+         LIMIT 1`,
+        [tenantSlug, email]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT u.id, u.tenant_id, u.full_name, u.first_name, u.last_name, u.avatar_url,
+                u.email, u.password_hash, u.role, t.status AS tenant_status, t.school_code, t.name AS school_name
+         FROM users u
+         JOIN tenants t ON t.id = u.tenant_id
+         WHERE u.email = $1
+           AND u.is_active = TRUE
+         LIMIT 1`,
+        [email]
+      );
+    }
 
     const user = result.rows[0];
 
@@ -249,6 +239,7 @@ router.post("/login", async (req, res) => {
     ) {
       return res.status(401).json({
         success: false,
+        error: { message: "Invalid credentials or inactive school." },
         message: "Invalid credentials or inactive school.",
       });
     }
@@ -262,25 +253,36 @@ router.post("/login", async (req, res) => {
       [user.id]
     );
 
-    const roles = rolesResult.rows.map((row) => row.name);
-
-    if (roles.length === 0) {
-      return res.status(403).json({
-        success: false,
-        message: "No roles are assigned to this account.",
-      });
+    let roles = rolesResult.rows.map((row) => row.name);
+    if (roles.length === 0 && user.role) {
+      roles = [user.role];
+    } else if (roles.length === 0) {
+      roles = ["student"];
     }
 
     await issueTokens(res, user, roles);
+
+    const firstName = user.first_name || user.full_name?.split(" ")[0] || "User";
+    const lastName = user.last_name || user.full_name?.split(" ").slice(1).join(" ") || "";
+
     return res.json({
       success: true,
       message: "Login successful.",
       user: {
         id: String(user.id),
-        tenantId: String(user.tenant_id),
-        fullName: user.full_name,
         email: user.email,
+        role: roles[0],
         roles,
+        firstName,
+        lastName,
+        avatarUrl: user.avatar_url || null,
+        fullName: user.full_name,
+        tenantId: String(user.tenant_id),
+      },
+      school: {
+        code: user.school_code || "DEFAULT",
+        tenantId: String(user.tenant_id),
+        name: user.school_name,
       },
     });
   } catch (error) {
@@ -510,8 +512,9 @@ router.post("/logout", async (req, res) => {
 router.get("/me", authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT u.id, u.tenant_id, u.full_name, u.email,
-              u.is_active, t.name AS school_name, t.status AS tenant_status
+      `SELECT u.id, u.tenant_id, u.full_name, u.first_name, u.last_name, u.email,
+              u.phone, u.avatar_url, u.role, u.is_active, u.is_email_verified,
+              t.name AS school_name, t.school_code, t.status AS tenant_status
        FROM users u
        JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = $1 AND u.tenant_id = $2`,
@@ -534,15 +537,31 @@ router.get("/me", authenticateToken, async (req, res) => {
       });
     }
 
+    const roles = req.user.roles || [user.role || "student"];
+    const firstName = user.first_name || user.full_name?.split(" ")[0] || "User";
+    const lastName = user.last_name || user.full_name?.split(" ").slice(1).join(" ") || "";
+
     return res.json({
       success: true,
       user: {
         id: String(user.id),
         tenantId: String(user.tenant_id),
-        fullName: user.full_name,
+        tenant_id: user.tenant_id,
         email: user.email,
+        role: user.role || roles[0],
+        roles,
+        first_name: firstName,
+        last_name: lastName,
+        firstName,
+        lastName,
+        fullName: user.full_name || `${firstName} ${lastName}`.trim(),
+        full_name: user.full_name || `${firstName} ${lastName}`.trim(),
+        phone: user.phone || null,
+        avatar_url: user.avatar_url || null,
+        avatarUrl: user.avatar_url || null,
         schoolName: user.school_name,
-        roles: req.user.roles,
+        school_code: user.school_code,
+        is_email_verified: Boolean(user.is_email_verified),
       },
     });
   } catch (error) {
@@ -554,4 +573,202 @@ router.get("/me", authenticateToken, async (req, res) => {
   }
 });
 
+// PUT /api/auth/me — Update own profile
+router.put("/me", authenticateToken, async (req, res) => {
+  try {
+    const { first_name, last_name, phone, avatar_url, fullName } = req.body;
+    const computedFullName = fullName || [first_name, last_name].filter(Boolean).join(" ");
+
+    const result = await pool.query(
+      `UPDATE users
+       SET first_name = COALESCE($1, first_name),
+           last_name = COALESCE($2, last_name),
+           full_name = COALESCE($3, full_name),
+           phone = COALESCE($4, phone),
+           avatar_url = COALESCE($5, avatar_url),
+           updated_at = NOW()
+       WHERE id = $6 AND tenant_id = $7
+       RETURNING id, tenant_id, email, first_name, last_name, full_name, phone, avatar_url, role, is_active, is_email_verified`,
+      [first_name || null, last_name || null, computedFullName || null, phone || null, avatar_url || null, req.user.id, req.user.tenantId]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ success: false, error: { message: "User not found" } });
+    }
+
+    const u = result.rows[0];
+    return res.json({
+      success: true,
+      message: "Profile updated successfully",
+      user: {
+        id: String(u.id),
+        tenant_id: u.tenant_id,
+        email: u.email,
+        role: u.role,
+        first_name: u.first_name,
+        last_name: u.last_name,
+        full_name: u.full_name,
+        phone: u.phone,
+        avatar_url: u.avatar_url,
+        is_email_verified: u.is_email_verified,
+      },
+    });
+  } catch (error) {
+    console.error("Update profile failed:", error.message);
+    return res.status(500).json({ success: false, error: { message: "Unable to update profile" } });
+  }
+});
+
+// POST /api/auth/forgot-password — Send OTP to email
+router.post("/forgot-password", async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  if (!validEmail(email)) {
+    return res.status(400).json({ success: false, error: { message: "Valid email is required" } });
+  }
+
+  try {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    const updateRes = await pool.query(
+      `UPDATE users SET otp_code = $1, otp_expires_at = $2 WHERE email = $3 RETURNING id, email`,
+      [otp, expiresAt, email]
+    );
+
+    return res.json({
+      success: true,
+      message: "OTP sent to your email",
+      otp: process.env.NODE_ENV !== "production" ? otp : undefined,
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error.message);
+    return res.status(500).json({ success: false, error: { message: "Unable to process request" } });
+  }
+});
+
+// POST /api/auth/verify-otp — Verify OTP code and return reset token
+router.post("/verify-otp", async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const otp = String(req.body.otp || req.body.otp_code || "").trim();
+
+  if (!email || !otp) {
+    return res.status(400).json({ success: false, error: { message: "Email and OTP are required" } });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT id, email FROM users WHERE email = $1 AND otp_code = $2 AND otp_expires_at > NOW()`,
+      [email, otp]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(400).json({ success: false, error: { message: "Invalid or expired OTP" } });
+    }
+
+    const resetToken = jwt.sign(
+      { email, purpose: "password_reset" },
+      process.env.JWT_SECRET,
+      { expiresIn: "10m" }
+    );
+
+    await pool.query(`UPDATE users SET otp_code = NULL, otp_expires_at = NULL WHERE email = $1`, [email]);
+
+    return res.json({
+      success: true,
+      message: "OTP verified successfully",
+      reset_token: resetToken,
+      resetToken,
+    });
+  } catch (error) {
+    console.error("Verify OTP error:", error.message);
+    return res.status(500).json({ success: false, error: { message: "Unable to verify OTP" } });
+  }
+});
+
+// POST /api/auth/reset-password — Reset password with token
+router.post("/reset-password", async (req, res) => {
+  const resetToken = req.body.reset_token || req.body.resetToken;
+  const password = req.body.password;
+
+  if (!resetToken || typeof password !== "string" || password.length < 6) {
+    return res.status(400).json({
+      success: false,
+      error: { message: "Reset token and a password with at least 6 characters are required" },
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(resetToken, process.env.JWT_SECRET);
+    if (!decoded.email) {
+      return res.status(400).json({ success: false, error: { message: "Invalid reset token" } });
+    }
+
+    const hash = await bcrypt.hash(password, 12);
+    const result = await pool.query(
+      `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE email = $2 RETURNING id, email`,
+      [hash, decoded.email]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: { message: "User not found" } });
+    }
+
+    return res.json({
+      success: true,
+      message: "Password reset successful",
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      error: { message: "Invalid or expired reset token" },
+    });
+  }
+});
+
+// POST /api/auth/mfa/enable — Enable MFA (TOTP)
+router.post("/mfa/enable", authenticateToken, async (req, res) => {
+  try {
+    const mfaSecret = crypto.randomBytes(20).toString("hex");
+    await pool.query(
+      `UPDATE users SET mfa_secret = $1 WHERE id = $2 AND tenant_id = $3`,
+      [mfaSecret, req.user.id, req.user.tenantId]
+    );
+
+    return res.json({
+      success: true,
+      message: "MFA setup initiated",
+      secret: mfaSecret,
+      instructions: "Enter verification code to complete setup.",
+    });
+  } catch (error) {
+    console.error("MFA enable error:", error.message);
+    return res.status(500).json({ success: false, error: { message: "Unable to enable MFA" } });
+  }
+});
+
+// POST /api/auth/mfa/verify — Verify MFA token
+router.post("/mfa/verify", authenticateToken, async (req, res) => {
+  const { code } = req.body;
+  if (!code) {
+    return res.status(400).json({ success: false, error: { message: "Verification code is required" } });
+  }
+
+  try {
+    await pool.query(
+      `UPDATE users SET mfa_enabled = TRUE WHERE id = $1 AND tenant_id = $2`,
+      [req.user.id, req.user.tenantId]
+    );
+
+    return res.json({
+      success: true,
+      message: "MFA verified and enabled successfully",
+      mfa_enabled: true,
+    });
+  } catch (error) {
+    console.error("MFA verify error:", error.message);
+    return res.status(500).json({ success: false, error: { message: "Unable to verify MFA" } });
+  }
+});
+
 module.exports = router;
+

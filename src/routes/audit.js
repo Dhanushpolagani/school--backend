@@ -36,9 +36,9 @@ function requireTenant(req, res) {
    AUDIT LOGS
    ========================================================================== */
 
-// GET /api/audit-logs/stats
+// GET /api/audit-logs/stats or /api/audit/stats
 // Statistics and aggregation on audit log activities
-router.get("/audit-logs/stats", async (req, res, next) => {
+router.get(["/audit-logs/stats", "/stats"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -94,9 +94,9 @@ router.get("/audit-logs/stats", async (req, res, next) => {
   }
 });
 
-// GET /api/audit-logs
+// GET /api/audit-logs or /api/audit/logs or /api/audit
 // List audit logs with multi-parameter filtering & pagination
-router.get("/audit-logs", async (req, res, next) => {
+router.get(["/audit-logs", "/logs", "/"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 
@@ -201,9 +201,25 @@ router.get("/audit-logs", async (req, res, next) => {
   }
 });
 
-// GET /api/audit-logs/:id
+// GET /api/audit-logs/export or /api/audit/export
+router.get(["/audit-logs/export", "/export"], async (req, res, next) => {
+  const tenantId = requireTenant(req, res);
+  if (!tenantId) return;
+
+  try {
+    const result = await pool.query(
+      `SELECT * FROM audit_logs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 500`,
+      [tenantId]
+    );
+    res.json({ success: true, count: result.rowCount, data: result.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/audit-logs/:id or /api/audit/logs/:id
 // Get single audit log entry
-router.get("/audit-logs/:id", async (req, res, next) => {
+router.get(["/audit-logs/:id", "/logs/:id"], async (req, res, next) => {
   const tenantId = requireTenant(req, res);
   if (!tenantId) return;
 

@@ -1091,4 +1091,21 @@ router.patch("/:hostelId/rooms/:roomId", async (req, res) => {
   }
 });
 
+// Integrated Hostel Fees and Attendance sub-routers
+try {
+  const hostelFeesRouter = require("../services/hostelFeesRouter");
+  router.use("/fees", hostelFeesRouter);
+  router.feesRouter = hostelFeesRouter;
+} catch (e) {
+  console.warn("Could not load hostelFeesRouter:", e.message);
+}
+
+try {
+  const hostelAttendanceRouter = require("../services/hostelAttendanceRouter");
+  router.use("/attendance", hostelAttendanceRouter);
+  router.attendanceRouter = hostelAttendanceRouter;
+} catch (e) {
+  console.warn("Could not load hostelAttendanceRouter:", e.message);
+}
+
 module.exports = router;
