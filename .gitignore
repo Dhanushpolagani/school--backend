@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+coverage/
+dist/
+build/
+*.log
+npm-debug.log*
+thunder-test-results.json
+storage/*
+!storage/.gitkeep
